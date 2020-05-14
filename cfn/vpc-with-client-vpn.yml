@@ -1,0 +1,303 @@
+Parameters:
+  ClientCidrBlock:
+    Type: String
+    Default: 192.168.4.0/22
+  ServerCertificateArn:
+    Type: String
+    #Default: arn:aws:acm:us-east-1:xxxxxxxxxxxx:certificate/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+  ClientCertificateArn:
+    Type: String
+    #Default: arn:aws:acm:us-east-1:yyyyyyyyyyyy:certificate/yyyyyyyy-yyyy-yyyy-yyyy-yyyyyyyyyyyy
+
+Mappings:
+  RegionSettings:
+    us-east-1:
+      VpcCIDR: 10.12.0.0/16
+      PublicSubnet1CIDR: 10.12.10.0/24
+      PublicSubnet2CIDR: 10.12.11.0/24
+      PrivateSubnet1CIDR: 10.12.20.0/24
+      PrivateSubnet2CIDR: 10.12.21.0/24
+      AZ1: us-east-1c
+      AZ2: us-east-1d
+
+Resources:
+  ClientEndpoint:
+    Type: AWS::EC2::ClientVpnEndpoint
+    Properties:
+      SplitTunnel: true
+      AuthenticationOptions:
+        - MutualAuthentication:
+            ClientRootCertificateChainArn: !Ref ClientCertificateArn
+          Type: certificate-authentication
+      ClientCidrBlock: !Ref ClientCidrBlock
+      ServerCertificateArn: !Ref ServerCertificateArn
+      VpcId: !Ref VPC
+      ConnectionLogOptions:
+        Enabled: false
+
+  ClientVpnTargetNetworkAssociation1:
+    Type: AWS::EC2::ClientVpnTargetNetworkAssociation
+    Properties:
+      ClientVpnEndpointId: !Ref ClientEndpoint
+      SubnetId: !Ref PrivateSubnet1
+
+  ClientVpnTargetNetworkAssociation2:
+    Type: AWS::EC2::ClientVpnTargetNetworkAssociation
+    Properties:
+      ClientVpnEndpointId: !Ref ClientEndpoint
+      SubnetId: !Ref PrivateSubnet2
+
+  Route1:
+    Type: AWS::EC2::ClientVpnRoute
+    Properties:
+      ClientVpnEndpointId: !Ref ClientEndpoint
+      DestinationCidrBlock: 0.0.0.0/0
+      TargetVpcSubnetId: !Ref PrivateSubnet1
+    DependsOn: ClientVpnTargetNetworkAssociation1
+
+  Route2:
+    #	The destination CIDR block cannot be a range that spans only within the target resource CIDR block
+    #(Service: AmazonEC2; Status Code: 400; Error Code: InvalidParameterValue; Request ID: b9289de9-ba71-44c7-9c54-c2a61807c3f6)
+    Type: AWS::EC2::ClientVpnRoute
+    Properties:
+      ClientVpnEndpointId: !Ref ClientEndpoint
+      DestinationCidrBlock: 0.0.0.0/0
+      TargetVpcSubnetId: !Ref PrivateSubnet2
+    DependsOn: ClientVpnTargetNetworkAssociation2
+
+  Authz:
+    Type: AWS::EC2::ClientVpnAuthorizationRule
+    Properties:
+      AuthorizeAllGroups: true
+      ClientVpnEndpointId: !Ref ClientEndpoint
+      TargetNetworkCidr: 0.0.0.0/0
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  InternetGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+
+  PublicSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - AZ1
+      CidrBlock: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - PublicSubnet1CIDR
+      MapPublicIpOnLaunch: true
+
+  PublicSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - AZ2
+      CidrBlock: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - PublicSubnet2CIDR
+      MapPublicIpOnLaunch: true
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - AZ1
+      CidrBlock: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - AZ2
+      CidrBlock: !FindInMap
+        - RegionSettings
+        - !Ref 'AWS::Region'
+        - PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+
+  NatGateway1EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway2EIP:
+    Type: AWS::EC2::EIP
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      Domain: vpc
+
+  NatGateway1:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway1EIP.AllocationId
+      SubnetId: !Ref PublicSubnet1
+
+  NatGateway2:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGateway2EIP.AllocationId
+      SubnetId: !Ref PublicSubnet2
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: InternetGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet1
+
+  PublicSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute1:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+
+  DefaultPrivateRoute2:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  NoIngressSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: "no-ingress-sg"
+      GroupDescription: "Security group with no ingress rule"
+      VpcId: !Ref VPC
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+    Export:
+      Name: !Sub ${AWS::StackName}-VPC
+
+  PublicSubnets:
+    Description: A list of the public subnets
+    Value: !Join [",", [!Ref PublicSubnet1, !Ref PublicSubnet2]]
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+
+  PublicSubnet1:
+    Description: A reference to the public subnet in the 1st Availability Zone
+    Value: !Ref PublicSubnet1
+
+  PublicSubnet2:
+    Description: A reference to the public subnet in the 2nd Availability Zone
+    Value: !Ref PublicSubnet2
+
+  PrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1
+
+  PrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2
+
+  NoIngressSecurityGroup:
+    Description: Security group with no ingress rule
+    Value: !Ref NoIngressSecurityGroup
+
+  VPCCidr:
+    Description: The VPCCider used for VPC peering route tables
+    Value: !FindInMap
+      - RegionSettings
+      - !Ref 'AWS::Region'
+      - VpcCIDR
+    Export:
+      Name: !Sub ${AWS::StackName}-VPCCidr
+
+  PublicRouteTable:
+    Description: Public Route Table Id to be used with VPC peering
+    Value: !Ref PublicRouteTable
+    Export:
+      Name: !Sub ${AWS::StackName}-PublicRouteTable
+
+  PrivateRouteTable1:
+    Description: Private Route Table Id to be used with VPC peering
+    Value: !Ref PrivateRouteTable1
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateRouteTable1
+
+  PrivateRouteTable2:
+    Description: Private Route Table Id to be used with VPC peering
+    Value: !Ref PrivateRouteTable2
+    Export:
+      Name: !Sub ${AWS::StackName}-PrivateRouteTable2
+
